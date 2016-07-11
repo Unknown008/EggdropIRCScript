@@ -1,0 +1,3 @@
+# EggdropIRCScript
+
+TBD
