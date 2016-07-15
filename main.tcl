@@ -15,6 +15,7 @@ set poke(currentPoke)  [list]
 set poke(rules)        6
 set poke(crules)       6
 set poke(forfeit)      [list]
+set poke(ready)        [list]
 
 ######################
 ###    Bindings    ###
@@ -75,6 +76,7 @@ proc poke:accept {nick host hand chan arg} {
   set trainerCount [llength $poke(prepList)]
   if {$trainerCount == 2 && [string trim $nick] ne [lindex $poke(prepList) 1]} {return}
   unbind pub - accept poke:accept
+  lappend poke(prepList) $nick
   lassign $poke(prepList) challenger target
   if {$target eq ""} {
     set target $nick
@@ -83,6 +85,7 @@ proc poke:accept {nick host hand chan arg} {
   putquick "PRIVMSG $challenger :Tell me your team details (you can link pastebin.com). Say \"help\" if you don't know the syntax."
   putquick "PRIVMSG $target :Tell me your team details (you can link pastebin.com). Say \"help\" if you don't know the syntax."
   bind msgm - "*" poke:battleprep
+  lappend poke(team) [list $challenger {}] [list $target {}]
 }
 
 proc poke:decline {nick host hand chan arg} {
@@ -106,12 +109,12 @@ proc poke:stop {nick host hand chan arg} {
   set poke(crules)       6
   set poke(team)         [list]
   set poke(currentPoke)  [list]
+  set poke(ready)        [list]
   unbind msgm - "*" poke:battleprep
 }
 
 proc poke:battleprep {nick host hand arg} {
   global poke
-  putlog "$nick said $arg"
   if {$nick ni $poke(prepList)} {return}
   if {$nick in $poke(forfeit)} {
     switch -nocase -regexp -- $arg {
@@ -129,6 +132,15 @@ proc poke:battleprep {nick host hand arg} {
         set id [lsearch $nick $poke(forfeit)]
         set poke(forfeit) [lreplace $poke(forfeit) $id $id]
         putquick "PRIVMSG $nick :Please continue with your team editing."
+      }
+    }
+  } elseif {$nick in $poke(ready)} {
+    switch -nocase -regexp -- $arg {
+      y(es?)? {
+        
+      }
+      no? {
+        
       }
     }
   } else {
@@ -164,18 +176,40 @@ proc poke:battleprep {nick host hand arg} {
         putquick "PRIVMSG $chan :$nick's team is ready!"
         lappend poke(trainerList) $nick
       }
-      default {poke:register $arg}
+      default {
+        set id [lsearch -index 0 -nocase $poke(team) $nick]
+        set nteam [lindex $poke(team) $id]
+        set len [llength [lindex $nteam 1]]
+        if {$len < $poke(crules)} {
+          poke:register $nick $arg
+        }
+      }
     }
   }
 }
 
-proc poke:register {arg} {
+proc poke:register {nick arg} {
   global poke
+  set id [lsearch -index 0 $poke(team) $nick]
+  set cteam [lindex $poke(team) $id 1]
+
   set elem [split $arg "/"]
   set len [llength $elem]
-  if {$len == 19} {
-    lassign $elem pokemon item nature IHP IAtk IDef ISpA ISpD ISpd EHP EAtk EDef ESpA ESpD ESpd Move1 Move2 Move3 Move4
-    
+
+  set elem [lassign $elem pokemon(species)]
+  set species $pokemon(species)
+  lassign $elem pokemon($species,item) pokemon($species,nature) pokemon($species,IHP) pokemon($species,IAtk) pokemon($species,IDef) pokemon($species,ISpA) pokemon($species,ISpD) pokemon($species,ISpd) pokemon($species,EHP) pokemon($species,EAtk) pokemon($species,EDef) pokemon($species,ESpA) pokemon($species,ESpD) pokemon($species,ESpd) pokemon($species,Move1) pokemon($species,Move2) pokemon($species,Move3) pokemon($species,Move4)
+  
+  lappend cteam [array get pokemon]
+  lset poke(team) $id [list $nick $cteam]
+  if {[llength $cteam] == $poke(crules)} {
+    set lineup [list]
+    foreach ind $cteam {
+      set id [lsearch -index 0 $ind species]
+      lappend lineup [lindex $ind $id+1]
+    }
+    putquick "PRIVMSG $nick :Your current line up is [join $lineup ", "]. Are you satisfied with your line up? (Y/N)"
+    lappend poke(ready) $nick
   }
 }
 
