@@ -83,7 +83,7 @@ proc poke:accept {nick host hand chan arg} {
   }
   putquick "PRIVMSG $chan :Battle between the challenger $challenger and trainer $target is about to begin!"
   putquick "PRIVMSG $challenger :Tell me your team details (you can link pastebin.com). Say \"help\" if you don't know the syntax."
-  putquick "PRIVMSG $target :Tell me your team details (you can link pastebin.com). Say \"help\" if you don't know the syntax."
+  putquick "PRIVMSG $target :Tell me your team details (you can link pastebin.com). Say \"teamhelp\" if you don't know the syntax."
   bind msgm - "*" poke:battleprep
   lappend poke(team) [list $challenger {}] [list $target {}]
 }
@@ -111,6 +111,7 @@ proc poke:stop {nick host hand chan arg} {
   set poke(currentPoke)  [list]
   set poke(ready)        [list]
   unbind msgm - "*" poke:battleprep
+  putquick "PRIVMSG $chan :The current battle has been stopped."
 }
 
 proc poke:battleprep {nick host hand arg} {
@@ -145,7 +146,7 @@ proc poke:battleprep {nick host hand arg} {
     }
   } else {
     switch -nocase -glob -- $arg {
-      help {
+      teamhelp {
         putquick "PRIVMSG $nick :See this pastebin for the syntax: http://pastebin.com/Ym1amdKE"
         putquick "PRIVMSG $nick :Use \"forfeit\" to give up."
         putquick "PRIVMSG $nick :Use \"cancel #\" to remove the Pokemon in the #th slot."
@@ -202,7 +203,8 @@ proc poke:register {nick arg} {
   
   lappend cteam [array get pokemon]
   lset poke(team) $id [list $nick $cteam]
-  if {[llength $cteam] == $poke(crules)} {
+  set teamsize [llength $cteam]
+  if {$teamsize == $poke(crules)} {
     set lineup [list]
     foreach ind $cteam {
       set id [lsearch -index 0 $ind species]
@@ -210,6 +212,8 @@ proc poke:register {nick arg} {
     }
     putquick "PRIVMSG $nick :Your current line up is [join $lineup ", "]. Are you satisfied with your line up? (Y/N)"
     lappend poke(ready) $nick
+  } else {
+    putquick "PRIVMSG $nick :$species has successfully been registered! You now have $teamsize Pokemon of $poke(crules) allowed."
   }
 }
 
