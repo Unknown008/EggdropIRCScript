@@ -17,7 +17,8 @@ set poke(crules)       "6v6"
 set poke(forfeit)      [list]
 set poke(ready)        [list]
 
-### Database settings
+### Modules
+package require http
 package require sqlite3
 sqlite3 dex pokedexdb
 
@@ -101,7 +102,7 @@ proc poke:accept {nick host hand chan arg} {
     set target $nick
   }
   putquick "PRIVMSG $chan :Battle between the challenger $challenger and trainer $target is about to begin!"
-  putquick "PRIVMSG $challenger :Tell me your team details (you can link pastebin.com). Say \"help\" if you don't know the syntax."
+  putquick "PRIVMSG $challenger :Tell me your team details (you can link pastebin.com). Say \"teamhelp\" if you don't know the syntax."
   putquick "PRIVMSG $target :Tell me your team details (you can link pastebin.com). Say \"teamhelp\" if you don't know the syntax."
   bind msgm - "*" poke:battleprep
   lappend poke(team) [list $challenger {}] [list $target {}]
@@ -182,11 +183,39 @@ proc poke:battleprep {nick host hand arg} {
         set id [lsearch -index 0 -nocase $poke(team) $nick]
         set nteam [lindex $poke(team) $id 1]
         set len [llength $nteam]
-        if {($param > 0 && $param <= $len) || $len == 1} {
+        if {[string tolower $param] eq "all"} {
+          lset poke(team) $id 1 {}
+          putquick "PRIVMSG $nick :All your Pokemon have been removed."
+        } elseif {[regexp -- {^\s*\d(?:\s*\d)+\s*$} $param]} {
+          set ids [regexp -all -inline -- {\d} $param]
+          set ids [lsort -integer -unique -decreasing $ids]
+          set removed [list]
+          foreach nid $ids {
+            if {$nid > 0 && $nid < 7} {
+              lappend removed $nid
+              set nteam [lreplace $nteam $nid-1 $nid-1]
+              lset poke(team) $id 1 $nteam
+            } else {
+              putquick "PRIVMSG $nick :Use \"cancel #\" to remove the Pokemon in the #th slot. # has to be between 1 and $len."
+              break
+            }
+          }
+          if {[llength $removed] > 0} {
+            set removed [join [lsort -increasing $removed] ", "]
+            putquick "PRIVMSG $nick :Pokemon at slots $removed have successfully been removed."
+          }
+        } elseif {($param > 0 && $param <= $len && [string is integer $param]) || $len == 1} {
           set remove [lindex $nteam $param-1]
+          set pokename [lindex $remove [lsearch $remove species]+1]
           set nteam [lreplace $nteam $param-1 $param-1]
           lset poke(team) $id 1 $nteam
-          putquick "PRIVMSG $nick :The Pokemon at the ${param}th slot ($remove) has been removed."
+          switch $param {
+            1 {set ord st}
+            2 {set ord nd}
+            3 {set ord rd}
+            default {set ord th}
+          }
+          putquick "PRIVMSG $nick :The Pokemon at the $param$ord slot ($pokename) has been removed."
         } else {
           putquick "PRIVMSG $nick :Use \"cancel #\" to remove the Pokemon in the #th slot. # has to be between 1 and $len."
         }
@@ -195,23 +224,47 @@ proc poke:battleprep {nick host hand arg} {
         
       }
       pastebin* {
-      
+        set link [lreplace $arg 0 0]
+        if {[regexp -- {pastebin\.com/([a-zA-Z0-9]+)} $link - id]} {
+          set url "http://pastebin.com/raw/$id"
+          set token [::http::geturl $link]
+          set file [::http::data $token]
+          ::http::cleanup $token
+          poke:pastebin $nick $file
+        } else {
+          putquick "PRIVMSG $nick :Link could not be resolved. Make sure it is a pastebin.com link."
+        }
+        
       }
       done {
         if {$nick in $poke(trainerList)} {return}
-        putquick "PRIVMSG $chan :$nick's team is ready!"
+        putquick "PRIVMSG $poke(chan) :$nick's team is ready!"
         lappend poke(trainerList) $nick
       }
       default {
         set id [lsearch -index 0 -nocase $poke(team) $nick]
         set nteam [lindex $poke(team) $id]
         set len [llength [lindex $nteam 1]]
-        if {$len < [lindex [split $poke(crules) "v"] $id]} {
+        set crules [lindex [split $poke(crules) "v"] $id]
+        if {$len < $crules} {
           set res [poke:parse $nick $arg]
           if {[llength [split $res "/"]] == 21} {
             if {[info exist poke(buffer,$nick)]} {unset poke(buffer,$nick)}
-            poke:register $nick $res $id
+            set registered [poke:register $nick $res $id]
+            putquick "PRIVMSG $nick :$registered has successfully been registered! You now have $len Pokemon of $poke(crules) allowed."
+            incr len
           }
+        }
+        set nteam [lindex $poke(team) $id]
+        set len [llength [lindex $nteam 1]]
+        if {$len == $crules} {
+          set lineup [list]
+          foreach ind $nteam {
+            set id [lsearch -index 0 $ind "species"]
+            lappend lineup [lindex $ind $id+1]
+          }
+          putquick "PRIVMSG $nick :Your current line up is [join $lineup ", "]. Are you satisfied with your line up? (Y/N)"
+          lappend poke(ready) $nick
         }
       }
     }
@@ -234,31 +287,40 @@ proc poke:register {nick arg id} {
     foreach sentence $reason {
       putquick "PRIVMSG $nick :Error: $sentence"
     }
-    return
+    return 0
   }
   
   lappend cteam [array get pokemon]
   lset poke(team) $id [list $nick $cteam]
-  set teamsize [llength $cteam]
-  if {$teamsize == [lindex [split $poke(crules) "v"] $id]} {
-    set lineup [list]
-    foreach ind $cteam {
-      set id [lsearch -index 0 $ind $pokemon(species)]
-      lappend lineup [lindex $ind $id+1]
+
+  return $pokemon(species)
+}
+
+proc poke:pastebin {text} {
+  set registered
+  foreach line [split $text "\r\n"] {
+    if {$line == ""} {continue}
+    set res [poke:parse $nick $line]
+    if {[llength [split $res "/"]] == 21} {
+      if {[info exist poke(buffer,$nick)]} {unset poke(buffer,$nick)}
+      if {[poke:register $nick $res $id] != 0} {
+        putquick "PRIVMSG $nick :$registered has successfully been registered!"
+      } else {
+        putquick "PRIVMSG $nick :The Pokemon could not be registered. See this pastebin for the syntax: http://pastebin.com/Ym1amdKE."
+        break
+      }
+    } elseif {$res eq "err"} {
+      break
     }
-    putquick "PRIVMSG $nick :Your current line up is [join $lineup ", "]. Are you satisfied with your line up? (Y/N)"
-    lappend poke(ready) $nick
-  } else {
-    putquick "PRIVMSG $nick :$pokemon(species) has successfully been registered! You now have $teamsize Pokemon of $poke(crules) allowed."
   }
 }
 
 proc poke:parse {nick arg} {
   global poke
-  set group [split $res "/"]
+  set group [split $arg "/"]
   if {[llength $group] == 21} {
     return $arg
-  } elseif {[llength $group] < 21}
+  } elseif {[llength $group] < 21} {
     if {![info exist poke(buffer,$nick)]} {
       set poke(buffer,$nick) $arg
     } else {
@@ -267,9 +329,9 @@ proc poke:parse {nick arg} {
   } else {
     putquick "PRIVMSG $nick :Invalid format. See this pastebin for the syntax: http://pastebin.com/Ym1amdKE"
     if {[info exist poke(buffer,$nick)]} {unset poke(buffer,$nick)}
-    return ""
+    return "err"
   }
-  return $poke(buffer)
+  return $poke(buffer,$nick)
 } 
 
 proc poke:check {arg} {
@@ -279,42 +341,47 @@ proc poke:check {arg} {
   set itemtable itemDetails6
   set movetable moveDetails6
   set leartable learDetails6
-  set natutable natuDetails
+  set natutable nature
   if {[dex eval "SELECT 1 FROM $poketable WHERE formname = '$pokemon(species)'"] != 1} {
-    lappend errors [list "Pokemon name is invalid."]
+    lappend errors "Pokemon name is invalid."
   }
   if {!($pokemon(level) > 0 && $pokemon(level) <= 100)} {
-    lappend errors [list "Pokemon level has to be between 1 and 100 inclusive."]
+    lappend errors "Pokemon level has to be between 1 and 100 inclusive."
   }
-  if {[dex eval "SELECT 1 FROM $itemtable WHERE name = '$pokemon(item)'"] != 1} {
-    lappend errors [list "Held item is invalid."]
-  }
+  # if {[dex eval "SELECT 1 FROM $itemtable WHERE name = '$pokemon(item)'"] != 1} {
+    # lappend errors [list "Held item is invalid."]
+  # }
   if {[dex eval "SELECT 1 FROM $natutable WHERE name = '$pokemon(nature)'"] != 1} {
-    lappend errors [list "Pokemon nature is invalid."]
+    lappend errors "Pokemon nature is invalid."
   }
-  if {$pokemon(nature) ni {M F NA}} {
-    lappend errors [list "Pokemon gender is invalid."]
+  if {$pokemon(gender) ni {M F NA}} {
+    lappend errors "Pokemon gender is invalid."
   }
   set totalEV 0
   foreach stat {HP Atk Def SpA SpD Spd} {
     if {!($pokemon(I$stat) >= 0 && $pokemon(I$stat) <= 31)} {
-      lappend errors [list "IV for $stat stat as to be between 0 and 31 inclusive."]
+      lappend errors "IV for $stat stat as to be between 0 and 31 inclusive."
     }
     if {!($pokemon(E$stat) >= 0 && $pokemon(E$stat) <= 255)} {
-      lappend errors [list "EV for $stat stat as to be between 0 and 255 inclusive."]
+      lappend errors "EV for $stat stat as to be between 0 and 255 inclusive."
     }
     incr totalEV $pokemon(E$stat)
   }
   if {$totalEV > 510} {
-    lappend errors [list "Total EVs for the Pokemon exceed the maximum of 510."]
+    lappend errors "Total EVs for the Pokemon exceed the maximum of 510."
   }
-  foreach i {1 2 3 4} {
-    set move $pokemon(Move$i)
-    set moveid [dex eval "SELECT id FROM $movetable WHERE name = '$move'"]
-    set movelist [dex eval "SELECT moves FROM $leartable WHERE name = '$pokemon(species)'"]
-    if {$moveid ni $movelist} {
-      lappend errors [list "The Pokemon cannot learn the move $move."]
-    }
+  set moveset [list]
+  # foreach i {1 2 3 4} {
+    # set move $pokemon(Move$i)
+    # set moveid [dex eval "SELECT id FROM $movetable WHERE name = '$move'"]
+    # set movelist [dex eval "SELECT moves FROM $leartable WHERE name = '$pokemon(species)'"]
+    # if {$moveid ni $movelist} {
+      # lappend errors [list "The Pokemon cannot learn the move $move."]
+    # }
+    # lappend moveset $move
+  # }
+  if {[llength $moveset] != [llength [lsort -unique $moveset]]} {
+    lappend errors "The Pokemon's moveset contains duplicate moves."
   }
   
   if {[llength $errors] > 0} {
@@ -323,4 +390,5 @@ proc poke:check {arg} {
     return 1
   }
 }
+
 putlog "Pokemon Battle $poke(ver) loaded."
