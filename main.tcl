@@ -70,7 +70,7 @@ proc poke:challenge {nick host hand chan arg} {
   global poke
   if {$poke(chan) ne $chan} {return}
   if {$poke(running) > 0} {
-    putquick "NOTICE $nick :A battle is already underway!"
+    putquick "NOTICE $nick :A battle is already under way!"
     return
   }
   if {[llength $arg] > 3} {
@@ -139,14 +139,34 @@ proc poke:stop {nick host hand chan arg} {
   global poke
   if {!$poke(running) || $poke(chan) ne $chan} {return}
   set poke(running)      0
-  set poke(forfeit)      [list]
+  set poke(gen)          6
   set poke(prepList)     [list]
   set poke(trainerList)  [list]
-  set poke(crules)       "6v6"
   set poke(team)         [list]
   set poke(currentPoke)  [list]
+  set poke(crules)       "6v6"
+  set poke(forfeit)      [list]
   set poke(ready)        [list]
-  unbind msgm - "*" poke:battleprep
+  set poke(battleready)  0
+  set poke(prio10)       [list]
+  set poke(prio5)        [list]
+  set poke(prio4)        [list]
+  set poke(prio3)        [list]
+  set poke(prio2)        [list]
+  set poke(prio1)        [list]
+  set poke(prio0)        [list]
+  set poke(prio-1)       [list]
+  set poke(prio-2)       [list]
+  set poke(prio-3)       [list]
+  set poke(prio-4)       [list]
+  set poke(prio-5)       [list]
+  set poke(prio-6)       [list]
+  set poke(prio-7)       [list]
+  catch {unbind pub - accept poke:accept}
+  catch {unbind pub - decline poke:decline}
+  catch {unbind msgm - "*" poke:battleprep}
+  catch {unbind msgm - "*" poke:battle}
+  
   putquick "PRIVMSG $chan :The current battle has been stopped."
 }
 
@@ -349,9 +369,8 @@ proc poke:register {nick arg id} {
     pokemon(ISpd) pokemon(EHP) pokemon(EAtk) pokemon(EDef) pokemon(ESpA) pokemon(ESpD) \
     pokemon(ESpd) pokemon(Move1) pokemon(Move2) pokemon(Move3) pokemon(Move4)
   
-  # Check pokemon validity
   set pass [poke:check [array get pokemon]]
-  lassign $pass status reason
+  lassign $pass team status reason
   if {!$status} {
     putquick "PRIVMSG $nick :The was a problem with your Pokemon; it could not be registered."
     foreach sentence $reason {
@@ -359,7 +378,7 @@ proc poke:register {nick arg id} {
     }
     return 0
   }
-  lappend cteam [array get pokemon]
+  lappend cteam $team
   lset poke(team) $id 1 $cteam
   return $pokemon(species)
 }
@@ -448,29 +467,40 @@ proc poke:check {arg} {
   set leartable learDetails$poke(gen)
   set natutable nature
   # TO DO: Replace current values with database values for presentation
-  set pokedetails [dex eval "SELECT * FROM $poketable WHERE formname = '$pokemon(species)'"] 
+  set pokedetails [dex eval "SELECT * FROM $poketable WHERE lower(formname) = lower('$pokemon(species)')"]
+  lassign $pokedetails id species formname type genus ability1 ability2 hability gender egggroup \
+    height weight legend evolve_cond hp atk def spatk spdef spd etc
   if {$pokedetails == ""} {
     lappend errors "Pokemon name is invalid."
+  } else {
+    set pokemon(species) $formname
   }
   if {!($pokemon(level) > 0 && $pokemon(level) <= 100)} {
     lappend errors "Pokemon level has to be between 1 and 100 inclusive."
   }
-  lassign $pokedetails id species formname type genus ability1 ability2 hability gender etc
-  if {$pokemon(ability) ni [list $ability1 $ability2 $hability]} {
+  set mID [lsearch -nocase [list $ability1 $ability2 $hability] $pokemon(ability)]
+  if {$mID == -1} {
     lappend errors "Pokemon ability is invalid."
+  } else {
+    set pokemon(ability) [lindex [list $ability1 $ability2 $hability] $mID]
   }
   # if {[dex eval "SELECT 1 FROM $itemtable WHERE name = '$pokemon(item)'"] != 1} {
     # lappend errors [list "Held item is invalid."]
   # }
-  if {[dex eval "SELECT 1 FROM $natutable WHERE name = '$pokemon(nature)'"] != 1} {
+  set nature [dex eval "SELECT * FROM $natutable WHERE lower(name) = lower('$pokemon(nature)')"]
+  if {$nature != ""} {
     lappend errors "Pokemon nature is invalid."
+  } else {
+    lassign $nature nat boost nerf 
+    set pokemon(nature) $nat
   }
-  if {$pokemon(gender) ni {M F NA}} {
+  if {[string toupper $pokemon(gender)] ni {M F NA}} {
     lappend errors "Pokemon gender is invalid."
+  } else {
+    set pokemon(gender) [string toupper $pokemon(gender)]
   }
   set totalEV 0
   foreach stat {HP Atk Def SpA SpD Spd} {
-    # TO DO: Add true stats
     if {!($pokemon(I$stat) >= 0 && $pokemon(I$stat) <= 31)} {
       lappend errors "IV for $stat stat as to be between 0 and 31 inclusive."
     }
@@ -478,6 +508,16 @@ proc poke:check {arg} {
       lappend errors "EV for $stat stat as to be between 0 and 255 inclusive."
     }
     incr totalEV $pokemon(E$stat)
+    if {$stat eq "HP"} {
+      set pokemon($stat) [expr {(($pokemon(I$stat)+(2*$hp)+($pokemon(E$stat)/4))*$pokemon(level))/100+$pokemon(level)+10}]
+    } else {
+      set nat 1
+      if {$boost ne $nerf} {
+        if {$boost eq $stat} {set nat 1.1}
+        if {$nerf eq $stat} {set nat 0.9}
+      }
+      set pokemon($stat) [expr {((($pokemon(I$stat)+(2*$hp)+($pokemon(E$stat)/4))*$pokemon(level))/100+5)*$nat}]
+    }
   }
   if {$totalEV > 510} {
     lappend errors "Total EVs for the Pokemon exceed the maximum of 510."
@@ -503,9 +543,9 @@ proc poke:check {arg} {
   }
   
   if {[llength $errors] > 0} {
-    return [list 0 $errors]
+    return [list [array get pokemon] 0 $errors]
   } else {
-    return 1
+    return [array get pokemon] 1
   }
 }
 
