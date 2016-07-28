@@ -11,7 +11,7 @@ set poke(running)      0
 set poke(gen)          6
 set poke(prepList)     [list] ;# challenger trainer
 set poke(trainerList)  [list] ;# nick1 nick2
-set poke(team)         [list] ;# {challener {{species pokemon ...} {species pokemon ...}}} {trainer }
+set poke(team)         [list] ;# {challenger {{species pokemon ...} {species pokemon ...}}} {trainer }
 set poke(currentPoke)  [list] ;# nick1 poke1 nick2 poke2
 set poke(rules)        "6v6"
 set poke(crules)       "6v6"
@@ -19,6 +19,7 @@ set poke(forfeit)      [list] ;# nick1 nick2
 set poke(ready)        [list] ;# nick1 nick2
 set poke(battleready)  0
 set poke(prio10)       [list] ;# action1 action2 ...
+set poke(prio9)        [list]
 set poke(prio5)        [list]
 set poke(prio4)        [list]
 set poke(prio3)        [list]
@@ -32,6 +33,7 @@ set poke(prio-4)       [list]
 set poke(prio-5)       [list]
 set poke(prio-6)       [list]
 set poke(prio-7)       [list]
+set poke(field)        [list] ;# nick1 {condition1 param condition2 param ...} nick2 {}
 
 ### Modules
 package require http
@@ -197,6 +199,7 @@ proc poke:battleprep {nick host hand arg} {
         if {$nick in $poke(trainerList)} {return}
         putquick "PRIVMSG $poke(chan) :$nick's team is ready!"
         lappend poke(trainerList) $nick
+        lappend poke(field) $nick {}
         if {[llength $poke(trainerList)] == 2} {
           lassign $poke(trainerList) trainer1 trainer2
           set poke1 [lindex $poke(team) 0 1 0]
@@ -510,6 +513,8 @@ proc poke:check {arg} {
     incr totalEV $pokemon(E$stat)
     if {$stat eq "HP"} {
       set pokemon($stat) [expr {(($pokemon(I$stat)+(2*$hp)+($pokemon(E$stat)/4))*$pokemon(level))/100+$pokemon(level)+10}]
+      set pokemon(cHP) $pokemon($stat)
+      set pokemon(status) ""
     } else {
       set nat 1
       if {$boost ne $nerf} {
@@ -545,7 +550,7 @@ proc poke:check {arg} {
   if {[llength $errors] > 0} {
     return [list [array get pokemon] 0 $errors]
   } else {
-    return [array get pokemon] 1
+    return [list [array get pokemon] 1]
   }
 }
 
@@ -575,16 +580,33 @@ proc poke:battle {nick host hand arg} {
     set id [lsearch $poke(currentPoke) $nick]
     set challenger [lsearch -index 0 $poke(team) $nick]
     set currentPoke [lindex $poke(currentPoke) $id+1]
-    switch -nocase -regexp -var param -- $arg {
-      battlehelp {
+    switch -nocase -regexp -matchvar param -- $arg {
+      {^battlehelp$} {
         putquick "PRIVMSG $nick :Use \"attack movename\" to use a move."
         putquick "PRIVMSG $nick :Use \"switch #\" to switch your current Pokemon to one from the #th slot."
         putquick "PRIVMSG $nick :Use \"forfeit\" to give up this Pokemon battle."
+        putquick "PRIVMSG $nick :Use \"checkteam\" to view your team."
+        putquick "PRIVMSG $nick :Use \"check\" to view the current Pokemon status and field."
+        
         return
       }
       {^(?:at(?:tack)?|move) *(.*)$} {
+        set cteam [lindex $poke(team) $challenger 1]
+        set cID [lsearch $cteam "*species $currentPoke*"]
+        set cPokemon [lindex $cteam $cID]
+        array set pokemon $cPokemon
+        set moves [array get pokemon Move*]
+        set idx [lsearch -nocase $moves $param]
+        if {$idx > -1} {
+          set move [lindex $moves $idx]
+        } elseif {[string is integer $param && $param > 0 && $param < 5} {
+          set move $pokemon(Move$param)
+        } else {
+          putquick "PRIVMSG $nick : Your Pokemon doesn't know that move. Your Pokemon knows the following moves: $pokemon(Move1), $pokemon(Move2), $pokemon(Move3), $pokemon(Move4)"
+          return
+        }
         set movetable moveDetails$poke(gen)
-        set details [dex eval "SELECT * FROM $movetable WHERE name = '$param'"]
+        set details [dex eval "SELECT * FROM $movetable WHERE name = '$move'"]
         lassign $details mid name type class pp basepower accuracy priority etc
         lappend poke(prio$priority) [list "pokemove:$name" $nick $currentPoke]
         incr poke(battleready)
@@ -599,10 +621,59 @@ proc poke:battle {nick host hand arg} {
           return
         }
       }
-      mega {
-        
+      {^mega +(?:at(?:tack)?|move) *(.*)$} {
+        set match 0
+        foreach a [split $item ""] b [split $name ""] {
+          if {$a eq $b} {incr match} else {break}
+        }
+        if {[regexp -- {\S+ite} $item] && $match > 4} {
+          lappend poke(prio9) poke:mega
+        } else {
+          putquick "PRIVMSG $nick :Your Pokemon cannot mega evolve!"
+        }
       }
-      forfeit {
+      {^checkteam$} {
+        set cteam [lindex $poke(team) $challenger 1]
+        foreach n $cteam {
+          array set pokemon $n
+          set status [format "%-11s %-5s %+3s/%+3s" $pokemon(species) $pokemon(status) $pokemon(cHP) $pokemon(HP)]
+          putquick "PRIVMSG $nick :$status"
+        }
+        array unset pokemon
+      }
+      {^check$} {
+        set cteam [lindex $poke(team) $challenger 1]
+        set cID [lsearch $cteam "*species $currentPoke*"]
+        set cPokemon [lindex $cteam $cID]
+        array set pokemon $cPokemon
+        set condition [array names pokemon Battle*]
+        set condList [lmap x $condition {set $pokemon($x)}]
+        array set field $poke(field)
+        array set fieldstat $field($nick)
+        set status [format "%s %s %s/%s Conditions: %s" $pokemon(species) $pokemon(status) $pokemon(cHP) $pokemon(HP) [join $condList ", "]]
+        putquick "PRIVMSG $nick :Pokemon: $status"
+        putquick "PRIVMSG $nick :Field: [join [array names fieldstat] {, }]"
+        array unset pokemon
+        array unset field
+        array unset fieldstat
+        
+        set opponent [lindex $poke(team) 1-$challenger 0]
+        set oteam [lindex $poke(team) 1-$challenger 1]
+        set oID [lsearch $cteam "*species [lindex $poke(currentPoke) 3-$id]*"]
+        set oPokemon [lindex $oteam $oID]
+        array set pokemon $oPokemon
+        set condition [array names pokemon Battle*]
+        set condList [lmap x $condition {set $pokemon($x)}]
+        array set field $poke(field)
+        array set fieldstat $field($opponent)
+        set status [format "%s %s %s/%s Conditions: %s" $pokemon(species) $pokemon(status) $pokemon(cHP) $pokemon(HP) [join $condList ", "]]
+        putquick "PRIVMSG $nick :Opponent: $status"
+        putquick "PRIVMSG $nick :Field: [join [array names fieldstat] {, }]"
+        array unset pokemon
+        array unset field
+        array unset fieldstat
+      }
+      {^forfeit$} {
         putquick "PRIVMSG $nick :Are you sure you want to forfeit? (Y/N)"
         lappend poke(forfeit) $nick
         return
