@@ -9,7 +9,7 @@ set poke(ver)          "pre 0.0.3"
 ### Global Variables
 set poke(running)      0
 set poke(gen)          6
-set poke(turn)         1
+set poke(turn)         0
 set poke(prepList)     [list] ;# challenger trainer
 set poke(trainerList)  [list] ;# nick1 nick2
 set poke(team)         [list] ;# {challenger {{species pokemon ...} {species pokemon ...}}} {trainer }
@@ -21,6 +21,7 @@ set poke(ready)        [list] ;# nick1 nick2
 set poke(battleready)  0
 set poke(prio10)       [list] ;# speed {action1} {action2} ... -> switches
 set poke(prio9)        [list]                               ;# -> mega evos
+set poke(prio6)        [list]                               ;# -> focus punch
 set poke(prio5)        [list]                               ;# -> moves
 set poke(prio4)        [list]                               ;# -> moves
 set poke(prio3)        [list]                               ;# -> moves
@@ -43,6 +44,7 @@ set poke(triggers)     [list] ;# {contact {pokemon effect pokemon effect} faint 
 set poke(switch)       [list] ;# fainted/switched pokemon
 set poke(currentPrio)  ""
 set poke(pending)      [list] ;# Same structure as those from poke(prio#) only with the priority for first argument
+set poke(log)          [list] ;# Battle log
                                
 ### poke(team)
 #{
@@ -56,6 +58,7 @@ set poke(pending)      [list] ;# Same structure as those from poke(prio#) only w
 #      item "Miracle Seed"
 #      nature Adamant
 #      gender M
+#      happiness 255
 #      IHP 31
 #      IAtk 31
 #      IDef 31
@@ -79,8 +82,10 @@ set poke(pending)      [list] ;# Same structure as those from poke(prio#) only w
 #      SpD 100
 #      Spd 100
 #      cHP 100
+#      ospecies Bulbasaur
 #      otype Grass/Poison
 #      oability Overgrow
+#      oitem "Miracle Seed"
 #      oMove1 {Tackle 45}
 #      oMove2 {Growl 45}
 #      oMove3 {"Leech Seed" 10}
@@ -91,9 +96,9 @@ set poke(pending)      [list] ;# Same structure as those from poke(prio#) only w
 #         SLP
 #         PAR
 #         FRZ
-#         CON - confusion
-#         INF - infatuation
-#         TRK - trick room
+#         BPOI
+#         conf - confusion
+#         infa - infatuation
 #         FLN - flinched
 #         Atk +-#
 #         Def +-#
@@ -233,6 +238,11 @@ proc poke:decline {nick host hand chan arg} {
 proc poke:stop {nick host hand chan arg} {
   global poke
   if {!$poke(running) || $poke(chan) ne $chan} {return}
+  lassign $poke(prepList) t c
+  set f [open "logs/[clock scan now] $t vs $c" w]
+  puts $f [join $poke(log) "\n"]
+  close $f
+  
   set poke(running)      0
   set poke(gen)          6
   set poke(turn)         1
@@ -245,6 +255,7 @@ proc poke:stop {nick host hand chan arg} {
   set poke(ready)        [list]
   set poke(battleready)  0
   set poke(prio10)       [list]
+  set poke(prio6)        [list]
   set poke(prio5)        [list]
   set poke(prio4)        [list]
   set poke(prio3)        [list]
@@ -266,6 +277,7 @@ proc poke:stop {nick host hand chan arg} {
   set poke(switch)       [list]
   set poke(pending)      [list]
   set poke(turn)         0
+  set poke(log)          [list]
   catch {unbind pub - accept poke:accept}
   catch {unbind pub - decline poke:decline}
   catch {unbind msgm - "*" poke:battleprep}
@@ -273,6 +285,7 @@ proc poke:stop {nick host hand chan arg} {
   catch {unbind msgm - "*" poke:force_switch}
   
   if {$arg eq ""} {
+    lappend poke(log) [list $poke(turn) "Battle was ended."]
     putquick "PRIVMSG $chan :The current battle has been stopped."
   }
 }
@@ -331,8 +344,9 @@ proc poke:battleprep {nick host hand arg} {
           poke:message send - $trainer1 "species $tpoke1" $trainer2 "species $tpoke2" - 0
           poke:message send - $trainer2 "species $tpoke2" $trainer1 "species $tpoke1" - 0
           
-          putquick "PRIVMSG $tpoke1 :Your Pokémon is awaiting your orders. What will you do? (attack | switch | forfeit)"
-          putquick "PRIVMSG $tpoke2 :Your Pokémon is awaiting your orders. What will you do? (attack | switch | forfeit)"
+          putquick "PRIVMSG $trainer1 :Your Pokémon is awaiting your orders. What will you do? (attack | switch | forfeit)"
+          putquick "PRIVMSG $trainer2 :Your Pokémon is awaiting your orders. What will you do? (attack | switch | forfeit)"
+          incr poke(turn)
         }
       }
       no? {
@@ -424,7 +438,7 @@ proc poke:battleprep {nick host hand arg} {
         }
         set lineup [poke:reorder $nick $id $new $crules]
         set note ""
-        if {$len = $crules} {
+        if {$len == $crules} {
           lappend poke(ready) $nick
           set note " Are you satisfied with your line up? (Y/N)"
         }
@@ -453,7 +467,7 @@ proc poke:battleprep {nick host hand arg} {
         set crules [lindex [split $poke(crules) "v"] $id]
         if {$len < $crules} {
           set res [poke:parse $nick $arg]
-          if {[llength [split $res "/"]] == 22} {
+          if {[llength [split $res "/"]] == 23} {
             if {[info exist poke(buffer,$nick)]} {unset poke(buffer,$nick)}
             set registered [poke:register $nick $res $id]
             if {$registered == 0} {return}
@@ -487,9 +501,9 @@ proc poke:register {nick arg id} {
   set elem [split $arg "/"]
   
   lassign $elem pokemon(species) pokemon(level) pokemon(ability) pokemon(item) pokemon(nature) \
-    pokemon(gender) pokemon(IHP) pokemon(IAtk) pokemon(IDef) pokemon(ISpA) pokemon(ISpD) \
-    pokemon(ISpd) pokemon(EHP) pokemon(EAtk) pokemon(EDef) pokemon(ESpA) pokemon(ESpD) \
-    pokemon(ESpd) pokemon(Move1) pokemon(Move2) pokemon(Move3) pokemon(Move4)
+    pokemon(gender) pokemon(happiness) pokemon(IHP) pokemon(IAtk) pokemon(IDef) pokemon(ISpA) \
+    pokemon(ISpD) pokemon(ISpd) pokemon(EHP) pokemon(EAtk) pokemon(EDef) pokemon(ESpA) \
+    pokemon(ESpD) pokemon(ESpd) pokemon(Move1) pokemon(Move2) pokemon(Move3) pokemon(Move4)
   
   set pass [poke:check [array get pokemon]]
   lassign $pass team status reason
@@ -533,7 +547,7 @@ proc poke:pastebin {nick text id} {
     incr count
     if {$line == ""} {continue}
     set res [poke:parse $nick $line]
-    if {[llength [split $res "/"]] == 22} {
+    if {[llength [split $res "/"]] == 23} {
       if {[info exist poke(buffer,$nick)]} {unset poke(buffer,$nick)}
       set registered [poke:register $nick $res $id]
       if {$registered != 0} {
@@ -569,9 +583,9 @@ proc poke:pastebin {nick text id} {
 proc poke:parse {nick arg} {
   global poke
   set group [split $arg "/"]
-  if {[llength $group] == 22} {
+  if {[llength $group] == 23} {
     return $arg
-  } elseif {[llength $group] < 22} {
+  } elseif {[llength $group] < 23} {
     if {![info exist poke(buffer,$nick)]} {
       set poke(buffer,$nick) $arg
     } else {
@@ -606,6 +620,7 @@ proc poke:check {arg} {
     lappend errors "Pokémon name is invalid."
   } else {
     set pokemon(species) $formname
+    set pokemon(ospecies) $formname
   }
   if {!($pokemon(level) > 0 && $pokemon(level) <= 100)} {
     lappend errors "Pokémon level has to be between 1 and 100 inclusive."
@@ -621,6 +636,7 @@ proc poke:check {arg} {
   # if {[dex eval "SELECT 1 FROM $itemtable WHERE name = '$pokemon(item)'"] != 1} {
     # lappend errors [list "Held item is invalid."]
   # }
+  set pokemon(oitem) $pokemon(item)
   set nature [dex eval "SELECT * FROM $natutable WHERE lower(name) = lower('$pokemon(nature)')"]
   if {$nature == ""} {
     lappend errors "Pokémon nature is invalid."
@@ -639,6 +655,8 @@ proc poke:check {arg} {
       default {lappend errors "Pokémon gender is invalid."}
     }
   }
+  if {$pokemon(happiness) < 0 || $pokemon(happiness) == ""} {set pokemon(happiness) 0}
+  if {$pokemon(happiness) > 255} {set pokemon(happiness) 255}
   set totalEV 0
   foreach stat {HP Atk Def SpA SpD Spd} {
     if {!($pokemon(I$stat) >= 0 && $pokemon(I$stat) <= 31)} {
@@ -765,56 +783,11 @@ proc poke:battle {nick host hand arg} {
       {^(?:at(?:tack)?|move)(?: +(.*))?$} {
         if {$nick in $poke(ready)} {return}
         set param [string trim [lindex $param 1]]
-        if {$param eq ""} {
-         if {[::tcl::mathop::+ {*}[lmap n {1 2 3 4} {set n [lindex $pokemon(Move$n) 1]}] == 0} {
-            set name "Struggle"
-            set priority 0
-          } else {
-            set moveset [lmap i {1 2 3 4} {
-              lassign $pokemon(Move$i) move pp opp
-              set i "$move $pp/$opp"
-            }]
-            putquick "PRIVMSG $nick :Please specify a move. Your Pokemon knows the following moves: [join $moveset {, }]"
-            return
-          }
-        } else {
-          set cteam [lindex $poke(team) $challenger 1]
-          set cID [lsearch -regexp $cteam "\\yspecies \\{?$currentPoke\\y\\}?"]
-          set cPokemon [lindex $cteam $cID]
-          array set pokemon $cPokemon
-          set moves [array get pokemon Move*]
-          set cmoves [lmap {a b} $moves {set b}]
-          set idx [lsearch -index 0 -nocase $cmoves $param]
-          if {$idx > -1} {
-            lassign [lindex $cmoves $idx] move pp
-          } elseif {[string is integer $param] && $param > 0 && $param < 5} {
-            set movedet $pokemon(Move$param)
-            lassign $movedet move pp
-          } else {
-            set moveset [lmap i {1 2 3 4} {
-              lassign $pokemon(Move$i) move pp opp
-              set i "$move $pp/$opp"
-            }]
-            putquick "PRIVMSG $nick :Please specify a move. Your Pokemon knows the following moves: [join $moveset {,}]"
-            putquick "PRIVMSG $nick :Your Pokémon doesn't know that move. Your Pokémon knows the following moves: [join $moveset {, }]"
-            return
-          }
-          if {$pp == 0} {
-             if {[::tcl::mathop::+ {*}[lmap n {1 2 3 4} {set n [lindex $pokemon(Move$n) 1]}] == 0} {
-              set name "Struggle"
-              set priority 0
-            } else {
-              putquick "PRIVMSG $nick :The are no PP left for that move!"
-              return
-            }
-          } else {
-            set movetable moveDetails$poke(gen)
-            set details [dex eval "SELECT * FROM $movetable WHERE name = '$move'"]
-            lassign $details mid name type class pp basepower accuracy priority etc
-          }
-        }
-        if {$priority eq ""} {set priority 0}
-        lappend poke(prio$priority) [list $pokemon(Spd) "poke:move:$name" $nick $currentPoke $challenger $cID [expr {2-$id}]]
+        set cteam [lindex $poke(team) $challenger 1]
+        set cID [lsearch -regexp $cteam "\\yspecies \\{?$currentPoke\\y\\}?"]
+        set pokedet [lindex $cteam $cID]
+        if {![poke:check:move $pokedet $param]} {return}
+        
         incr poke(battleready)
         lappend poke(ready) $nick
       }
@@ -982,19 +955,91 @@ proc poke:battle {nick host hand arg} {
   }
 }
 
+###
+#
+proc poke:check:move {pokedet param} {
+  global poke
+  upvar nick nick currentPoke currentPoke challenger otrainer cID cID id id
+  array set pokemon $pokedet
+  if {$param eq ""} {
+    set pplist [lmap n {1 2 3 4} {set n [lindex $pokemon(Move$n) 1]}]
+    if {[::tcl::mathop::+ {*}$pplist] == 0} {
+      set name "Struggle"
+    } else {
+      poke:usable_moves $nick $pokedet $param
+    }
+  } else {
+    set moves [array get pokemon Move*]
+    set cmoves [lmap {a b} $moves {set b}]
+    set idx [lsearch -index 0 -nocase $cmoves $param]
+    if {$idx > -1} {
+      lassign [lindex $cmoves $idx] move pp
+    } elseif {[string is integer $param] && $param > 0 && $param < 5} {
+      set movedet $pokemon(Move$param)
+      lassign $movedet move pp
+    } else {
+      poke:usable_moves $nick $pokedet $param
+    }
+    if {$pp == 0} {
+      set pplist [lmap n {1 2 3 4} {set n [lindex $pokemon(Move$n) 1]}]
+      if {[::tcl::mathop::+ {*}$pplist] == 0} {
+        set name "Struggle"
+        set priority 0
+      } else {
+        putquick "PRIVMSG $nick :The are no PP left for that move!"
+        return 0
+      }
+    } else {
+      if {[lsearch -glob $pokemon(status) "disable $move *"] > -1} {
+        putquick "PRIVMSG $nick :This move has been disabled! Please pick another."
+        return 0
+      }
+      set movetable moveDetails$poke(gen)
+      set details [dex eval "SELECT * FROM $movetable WHERE name = '$move'"]
+      lassign $details mid name type class pp basepower accuracy priority etc
+    }
+  }
+  if {$priority eq ""} {set priority 0}
+  lappend poke(prio$priority) [list $pokemon(Spd) "poke:move:$name" $nick $currentPoke $otrainer $cID [expr {2-$id}]]
+  return 1
+}
+
+proc poke:usable_moves {nick pokedet param} {
+  array set pokemon $pokedet
+  set moveset [lmap i {1 2 3 4} {
+    lassign $pokemon(Move$i) move pp opp
+    if {$pp > 0 && [lsearch -glob $pokemon(status) "disable $move *"] == -1} {
+      if {[set canuse [lsearch -glob -inline $pokemon(status) "lockmove *"]] eq ""} {
+        set i "$move $pp/$opp"
+      } elseif {[lindex $canuse 1] eq $move} {
+        set i "$move $pp/$opp"
+        break
+      }
+    } 
+  }]
+  if {[llength $moveset] != 0} {
+    putquick "PRIVMSG $nick :Please specify a valid move. $param is not a valid move. Your Pokemon can use the following moves: [join $moveset {, }]"
+    return -level 2 0
+  } else {
+    uplevel [list set name "Struggle"]
+  }
+}
+
 ### poke:battleresolve
 # Called after both players did their moves
 proc poke:battleresolve {} {
   global poke
-  foreach i {10 9 5 4 3 2 1 0 -1 -2 -3 -4 -5 -6 -7 -8 -9 -10} {
+  set priorities [lsort -integer -decreasing [lmap x [array names poke -glob prio*] {set x [string map {prio {}} $x]}]]
+  foreach i $priorities {
     if {$poke(currentPrio) != "" && $poke(currentPrio) < $i} {
       continue
     } else {
       set poke(currentPrio) $i
     }
     if {[llength $poke(prio$i)] != 0} {
-      set shuffled [poke:shuffle $poke(prio$i)]
-      foreach actionset [lsort -decreasing -index 0 -integer $shuffled] {
+      if {[llength $poke(prio$i)] == 0} {continue}
+      set poke(prio$i) [lsort -decreasing -index 0 -integer [poke:shuffle $poke(prio$i)]]
+      foreach actionset $poke(prio$i) {
         set poke(prio$i) [lreplace $poke(prio$i) 0 0]
         set action [lreplace $actionset 0 0]
         switch -glob [lindex $action 0] {
@@ -1012,23 +1057,38 @@ proc poke:battleresolve {} {
             } else {
               set stop [[string tolower [join $procedure ""]] $nick $pokedet $otrainer $opPokeDet]
             }
+            puts stop:$stop
             if {$stop == 1} {
               poke:faint $otrainer
               return
             }
+            if {$stop == 2} {return}
           } 
           "poke:status" {
             # Burn/Poison effects
-            lassign $action procedure status trainer pokedet otrainer opokedet
-            set stop [poke:status $status $trainer $pokedet $otrainer $opokedet]
+            set stop [eval $action]
             if {$stop == 1} {return}
           }
-          "poke:switch" {
-            eval $action
-          }
           "poke:faint" {
+            lassign $action trainer pokemon
             eval $action
             return
+          }
+          "poke:switch" {
+            lassign $action procedure trainer cID nID 
+            set tID [lsearch -index 0 $poke(team) $trainer]
+            eval $action
+          }
+          "poke:movetemplate:multiturn" {
+            set stop [eval $action]
+            if {$stop == 1} {
+              lassign $action proc move trainer pokedet otrainer opokedet
+              poke:faint $otrainer
+              return
+            }
+          }
+          default {
+            eval $action
           }
         }
       }
@@ -1093,21 +1153,22 @@ proc poke:damage_calc {pokedet opokedet bp acc type class flags} {
   } else {}
    
   set stab [expr {$type in [split $pokemon(type) "/"] ? 1.5 : 1}]
-  set weak [poke:get_weakness $type $opokemon(type)]
+  set weak [poke:get_weakness $type $opokemon(type) $opokemon(status)]
   
   set accboost [poke:boost $pokemon(status) "Acc"]
   set evaboost [poke:boost $opokemon(status) "Eva"]
-  set acc [expr {int($acc*$accboost*$evaboost)}]
+  if {[string is integer $acc]} {
+    set acc [expr {int($acc*$accboost*$evaboost)}]
+  }
   
   poke:random
   set hit [rand 100]
-  if {$hit > $acc && $acc ne "-"} {
+  if {$acc ne "-" && $hit > $acc} {
     return [list "miss" 0 0]
   } elseif {$weak == 0} {
-    return "no effect"
+    return [list "no effect" 0 0]
   }
 
-  
   poke:random
   set idx [lsearch -index 0 $pokemon(status) "Crit"]
   set tidx [lsearch -index 0 $pokemon(status) "tempCrit"]
@@ -1119,11 +1180,11 @@ proc poke:damage_calc {pokedet opokedet bp acc type class flags} {
   } else {
     set value 0
     if {$idx > -1} {
-      regexp {Crit (\d)} [lindex $pokemon(status) $idx] - value
+      regexp {\yCrit (-?\d)} [lindex $pokemon(status) $idx] - value
     }
     set tvalue 0
     if {$tidx > -1} {
-      regexp {Crit (\d)} [lindex $pokemon(status) $tidx] - tvalue
+      regexp {\ytempCrit (-?\d)} [lindex $pokemon(status) $tidx] - tvalue
     }
     if {$value == -1 || $tvalue == -1} {
       set value -1
@@ -1173,18 +1234,37 @@ proc poke:damage_calc {pokedet opokedet bp acc type class flags} {
   }
   
   poke:random
-  
   set finalDmg [expr {int((1-(rand()/100*15))*$dmgBase)}]
   if {"BRN" in $pokemon(status) && $class eq "Physical" && $pokemon(ability) ne "Guts"} {
     set finalDmg [expr {int($finalDmg/2)}]
   }
-  return [list $type [expr {int($finalDmg)}] $crit]
+  if {$finalDmg > $opokemon(cHP)} {set $finalDmg $opokemon(cHP)}
+  
+  return [list "$type" [expr {int($finalDmg)}] $crit]
 }
 
-proc poke:get_weakness {mType type} {
+proc poke:get_weakness {mType type status} {
   global poke
+  set eff [list]
   lassign [split $type "/"] type1 type2
-  set eff [dex eval "
+  if {"grounded" in $status && $mType eq "Ground" && [string match "*Flying*" $type]} {
+    if {$type1 eq "Flying"} {
+      lappend eff 1
+      set type1 ""
+    } else {
+      lappend eff 1
+      set type2 ""
+    }
+  }
+  if {[string first "/" $mType] > -1} {
+    lassign [split $mType "/"] mType smType
+    lappend eff {*}[dex eval "
+      SELECT effectiveness FROM matcDetails$poke(gen)
+      WHERE (type1 = '$type1' AND type2 = '$smType') OR
+            (type1 = '$type2' AND type2 = '$smType')
+    "]
+  }
+  lappend eff {*}[dex eval "
     SELECT effectiveness FROM matcDetails$poke(gen)
     WHERE (type1 = '$type1' AND type2 = '$mType') OR
           (type1 = '$type2' AND type2 = '$mType')
@@ -1192,7 +1272,7 @@ proc poke:get_weakness {mType type} {
   if {[llength $eff] == 1} {
     return $eff
   } else {
-    return [expr {[lindex $eff 0]*[lindex $eff 1]}]
+    return [::tcl::mathop::* {*}$eff]
   }
 }
 
@@ -1278,7 +1358,7 @@ proc poke:update_pokemon {trainer pokedet name value} {
   switch -regexp -matchvar param $value {
     {^\+(.+)} {
       set param [lindex $param 1]
-      if {$pokemon(cHP) == $pokemon(HP)} {return 0}
+      if {$pokemon(cHP) == $pokemon(HP)} {return [list 0 [array get pokemon]]}
       incr pokemon(cHP) $param
       if {$pokemon(cHP) > $pokemon(HP)} {
         set pokemon(cHP) $pokemon(HP)
@@ -1306,16 +1386,26 @@ proc poke:update_pokemon {trainer pokedet name value} {
       set idx [lsearch -index 0 $pokemon(status) [lindex $param 0]]
       # Status not set (yet)
       if {$idx == -1} {
+        set currentstat [lsearch -index 0 -regexp $pokemon(status) {^[A-Z]{3,4}$}]
+        if {$currentstat > -1 && [string len $param] <= 4} {
+          return [list 0 [lindex $pokemon(status) $currentstat]]
+        }
         lappend pokemon(status) $param
       } else {
         # Stats update if anything other than status ailment
-        if {[string len $value] > 3} {
+        if {[string len $param] > 4} {
           set cstat [lindex $pokemon(status) $idx]
           regexp {(\S+) ([+-]?\d)} $cstat - stat val
-          if {$val == 6} {return 0}
+          if {($val == 6 && [string first "+" $val] > -1) ||
+              ($val == -6 && [string first "-" $val] > -1)} {return 0}
           incr val [lindex $param 1]
           if {$val > 6} {set val 6}
-          lset pokemon(status) $idx "$stat $val"
+          if {$val < -6} {set val -6}
+          if {$val == 0} {
+            set pokemon(status) [lreplace $pokemon(status) $idx $idx]
+          } else {
+            lset pokemon(status) $idx "$stat $val"
+          }
         } else {
           return 0
         }
@@ -1342,9 +1432,35 @@ proc poke:update_pokemon {trainer pokedet name value} {
 proc poke:trigger {type trainer pokedet otrainer opokedet args} {
   global poke
   set items [lsearch -all -inline -index 0 $poke(triggers) $type]
-  if {[llength $items] == 0} {return 0}
+  if {[llength $items] == 0} {
+    if {$type eq "pursuit"} {
+      set found [lsearch $poke(prio0) poke:pursuit]
+      set actionset [lindex $poke(prio0) $found]
+      if {$found > -1 && ![regexp {poke:pursuit \S+ .*$nick}]} {
+        set action [lreplace $actionset 0 0]
+        set poke(prio0) [lreplace $poke(prio0) $found $found]
+        set arg [lassign $action procedure nick pokemon trainerID pokeID opponentID]
+        if {[list $nick $pokemon] in $poke(switch)} {continue}
+        set pokedet [lindex $poke(team) $trainerID 1 $pokeID]
+        set opponentPoke [lindex $poke(currentPoke) $opponentID+1]
+        set opTeam [lindex $poke(team) [expr {1-$trainerID}] 1]
+        set opPokeID [lsearch -regexp $opTeam "\\yspecies \\{?$opponentPoke\\y\\}?"]
+        set opPokeDet [lindex $opTeam $opPokeID]
+        set otrainer [lindex $poke(currentPoke) $opponentID]
+        poke:pursuit $nick $pokedet $otrainer $opPokeDet 2
+      }
+    }
+    return 0
+  }
   for {set i [expr {[llength $items]-1}]} {$i > -1} {incr i -1} {
-    set result [{*}[lrange [lindex $items $i] 1 end]]
+    if {$type eq "launch"} {
+      set action [lrange [lindex $items $i] 1 end]
+      if {[lindex $action 4] eq $trainer} {
+        {*}$action
+      }
+    } else {
+      set result [{*}[lrange [lindex $items $i] 1 end]]
+    }
   }
   return 0
 }
@@ -1352,10 +1468,8 @@ proc poke:trigger {type trainer pokedet otrainer opokedet args} {
 proc poke:faint {nick} {
   global poke
   set tID [lsearch $poke(currentPoke) $nick]
-  
   set trainer [lsearch -index 0 $poke(team) $nick]
   set cteam [lindex $poke(team) $trainer 1]
-  
   set cPoke [lindex $poke(currentPoke) $tID+1]
   lappend poke(switch) [list $nick $cPoke]
   
@@ -1375,13 +1489,19 @@ proc poke:faint {nick} {
     poke:stop - - - $poke(chan) -
     return
   }
+  set idx [lsearch -all $poke(pending) "\\y$nick $cPoke\\y"]
+  set idx [lsort -integer -decreasing $idx]
+  foreach id $idx {
+    set poke(pending) [lreplace $poke(pending) $id $id]
+  }
+  
   bind msgm - "*" poke:force_switch
   putquick "PRIVMSG $nick :Please pick a Pokemon (use \"switch pokemonname\" or \"switch pokemonnumber\"): [join $available_list {, }]"
 }
 
 proc poke:force_switch {nick host hand arg} {
   global poke
-  if {[set switch [lsearch -index 0 $poke(switch) $nick]]} {return}
+  if {[set idx [lsearch -index 0 $poke(switch) $nick]] == -1} {return}
   if {$nick in $poke(forfeit)} {
     switch -nocase -regexp -- $arg {
       y(es?)? {
@@ -1435,7 +1555,8 @@ proc poke:force_switch {nick host hand arg} {
           putquick "PRIVMSG $nick :That Pokémon cannot battle anymore! Please pick another."
           return
         }
-        poke:switch $nick $cID $nID
+        lassign [lindex $poke(switch) $idx] - - bp
+        poke:switch $nick $cID $nID $bp
         unbind msgm - "*" poke:force_switch
         poke:battleresolve
       }
@@ -1495,44 +1616,12 @@ proc poke:force_switch {nick host hand arg} {
         lappend poke(forfeit) $nick
         return
       }
-      # default {
-        # set param $arg
-        # set crules [lindex [split $poke(crules) "v"] $challenger]
-        # set cteam [lindex $poke(team) $challenger 1]
-        # set cID [lsearch -regexp $cteam "\\yspecies \\{?$currentPoke\\y\\}?"]
-        # if {[string is integer $param] && $crules <= $poke(crules) && $crules > 1} {
-          # if {$cID == $param} {
-            # putquick "PRIVMSG $nick :Pick a Pokémon other than your current Pokémon."
-            # return
-          # }
-          # set nID $param
-        # } elseif {![string is integer $param]} {
-          # # Add pokemon name choice
-          # set nID [lsearch -nocase -regexp $cteam "\\yspecies \\{?$param\\y\\}?"]
-          # if {$nID == -1} {
-            # putquick "PRIVMSG $nick :You don't have this Pokemon on your team."
-            # return
-          # }
-        # } else {
-          # putquick "PRIVMSG $nick :Invalid number"
-          # return
-        # }
-        # set tPokemon [lindex $cteam $nID]
-        # array set pokemon $tPokemon
-        # if {$pokemon(cHP) == 0} {
-          # putquick "PRIVMSG $nick :That Pokémon cannot battle anymore! Please pick another."
-          # return
-        # }
-        # poke:switch $nick $cID $nID
-        # set poke(switch) [lreplace $poke(switch) $switch $switch]
-      # }
     }
   }
 }
 
 proc poke:switch {nick cID nID args} {
   global poke
-  
   set tID [lsearch -index 0 $poke(team) $nick]
   set cpokedet [lindex $poke(team) $tID 1 $cID]
   set npokedet [lindex $poke(team) $tID 1 $nID]
@@ -1546,18 +1635,41 @@ proc poke:switch {nick cID nID args} {
   }
   set id [lsearch $poke(currentPoke) $nick]
   lset poke(currentPoke) $id+1 $npoke(species)
-  
   set pstat [list]
-  foreach stat $cpoke(status) {
-    if {$stat in {PSN BRN SLP BPSN FRZ PAR}} {
-      lappend pstat $stat
-      break
+  lappend pstat {*}$npoke(status)
+  # {} -> normal switches
+  # battle -> u-turn switches
+  if {$args in {"{}" "battle"}} {
+    set otrainer [lindex $poke(currentPoke) [expr {2-$id}]]
+    set oID [lsearch -index 0 $poke(team) $otrainer]
+    set opokedet [lsearch -regexp [lindex $poke(team) $oID 1] "\\yspecies \\{?[lindex $poke(currentPoke) [expr {3-$id}]]\\y\\}?"]
+    poke:trigger pursuit $nick $cpokedet $otrainer $opokedet
+    foreach stat $cpoke(status) {
+      if {[regexp {B?PSN|SLP|PAR|FRZ|BRN} $stat m]} {
+        if {$m eq "BPSN"} {set stat BPSN}
+        if {$m eq "SLP"} {
+          regexp {SLP (\d).\d} $stat - t c
+          set stat "SLP $t.$t"
+        }
+        lappend pstat $stat
+        break
+      }
     }
-  }
-  set cpoke(status) $pstat
-  lset poke(team) $tID 1 $cID [array get cpoke]
-  
-  if {$args eq ""} {
+    set cpoke(status) $pstat
+    lset poke(team) $tID 1 $cID [array get cpoke]
+    poke:message switch - $nick $cpokedet [lindex $poke(currentPoke) [expr {2-$id}]] "" - - $npoke(species)
+  # baton pass switch
+  } elseif {$args eq "{Baton Pass}"} {
+    foreach stat $cpoke(status) {
+      if {![regexp {B?PSN|SLP|PAR|FRZ|BRN} $stat m] &&
+          ![string match "*bound" $stat] &&
+          ![string match "stockpile" $stat]} {
+        lappend pstat $stat
+      } elseif {[regexp {BPSN} $stat m] && ![regexp {\{[A-Z]{3,4}[^\}]*\}} $pstat]} {
+        lappend pstat $stat
+      }
+    }
+    poke:update_pokemon $nick $npokedet status $passed
     poke:message switch - $nick $cpokedet [lindex $poke(currentPoke) [expr {2-$id}]] "" - - $npoke(species)
   }
   #poke:switch_trigger Trigger stuff like spikes
@@ -1571,6 +1683,11 @@ proc poke:message {type move trainer pokedet otrainer opokedet dmg crit args} {
   set trainermsg ""
   set otrainermsg ""
   set faint 0
+  
+  if {$type ne "heal" && [info exist opokemon(cHP)] && $opokemon(cHP) < $dmg} {
+    set dmg $opokemon(cHP)
+  }
+  
   switch -regexp $type {
     {^send$} {
       append chanmsg "$trainer sends out $pokemon(species)!"
@@ -1586,6 +1703,16 @@ proc poke:message {type move trainer pokedet otrainer opokedet dmg crit args} {
       append chanmsg "$otrainer's $opokemon(species) [join $args { }]!"
       append trainermsg "$opokemon(species) [join $args { }]!"
       append otrainermsg "Foe $opokemon(species) [join $args { }]!"
+    }
+    {^customself$} {
+      append chanmsg "$trainer's $pokemon(species) [join $args { }]!"
+      append trainermsg "$pokemon(species) [join $args { }]!"
+      append otrainermsg "Foe $pokemon(species) [join $args { }]!"
+    }
+    {^fullcustom$} {
+      append chanmsg "[join $args { }]!"
+      append trainermsg "[join $args { }]!"
+      append otrainermsg "[join $args { }]!"
     }
     {^multmiss$} {
       append chanmsg "Attack missed!"
@@ -1650,28 +1777,38 @@ proc poke:message {type move trainer pokedet otrainer opokedet dmg crit args} {
       append trainermsg "Foe $opokemon(species) was paralyzed! It may be unable to move!"
       append otrainermsg "$opokemon(species) was paralyzed! It may be unable to move!"
     }
+    {^parstun$} {
+      append chanmsg "$trainer's $pokemon(species) is fully paralyzed!"
+      append trainermsg "$pokemon(species) is fully paralyzed!"
+      append otrainermsg "Foe $pokemon(species) is fully paralyzed!"
+    }
     {^SLP$} {
-      # append chanmsg "$otrainer's $opokemon(species) was paralyzed! It may be unable to move!"
-      # append trainermsg "Foe $opokemon(species) was paralyzed! It may be unable to move!"
-      # append otrainermsg "$opokemon(species) was paralyzed! It may be unable to move!"
+      append chanmsg "$otrainer's $opokemon(species) fell asleep!"
+      append trainermsg "Foe $opokemon(species) fell asleep!"
+      append otrainermsg "$opokemon(species) fell asleep!"
+    }
+    {^slpstun$} {
+      append chanmsg "$trainer's $pokemon(species) is fast asleep!"
+      append trainermsg "$pokemon(species) is fast asleep!"
+      append otrainermsg "Foe $pokemon(species) is fast asleep!"
     }
     {^FRZ$} {
-      # append chanmsg "$otrainer's $opokemon(species) was paralyzed! It may be unable to move!"
-      # append trainermsg "Foe $opokemon(species) was paralyzed! It may be unable to move!"
-      # append otrainermsg "$opokemon(species) was paralyzed! It may be unable to move!"
+      append chanmsg "$otrainer's $opokemon(species) was frozen solid!"
+      append trainermsg "Foe $opokemon(species) was frozen solid!"
+      append otrainermsg "$opokemon(species) was frozen solid!"
+    }
+    {^frzstun$} {
+      append chanmsg "$otrainer's $opokemon(species) is frozen solid!"
+      append trainermsg "Foe $opokemon(species) is frozen solid!"
+      append otrainermsg "$opokemon(species) is frozen solid!"
     }
     {^CON$} {
       append chanmsg "$otrainer's $opokemon(species) became confused!"
       append trainermsg "Foe $opokemon(species) became confused!"
       append otrainermsg "$opokemon(species) became confused!"
     }
-    {^thaw$} {
-      append chanmsg "$otrainer's $opokemon(species) thawed out of the ice!"
-      append trainermsg "Foe $opokemon(species) thawed out of the ice!"
-      append otrainermsg "$opokemon(species) thawed out of the ice!"
-    }
     {^focus$} {
-      # Focus sash/sturdy
+      # Focus sash/sturdy/endure
     }
     {^stat.+} {
       if {[regexp {^stat([-+])(\d)$} $type - dir val]} {
@@ -1695,8 +1832,12 @@ proc poke:message {type move trainer pokedet otrainer opokedet dmg crit args} {
         append chanmsg "$opokemon(species)'s $args won't go $dir!"
         append trainermsg "Foe $opokemon(species)'s $args won't go $dir!"
         append otrainermsg "$opokemon(species)'s $args won't go $dir!"
+      } elseif {$type eq "statfail"} {
+        append chanmsg "But it failed!"
+        append trainermsg "But it failed!"
+        append otrainermsg "But it failed!"
       } else {
-        regexp {^statcap([A-Z]{3})$} $type - dir
+        regexp {^statcap([A-Z]{3,4})$} $type - dir
         switch $dir {
           BRN {set stat "burned"}
           POI {set stat "poisoned"}
@@ -1706,6 +1847,44 @@ proc poke:message {type move trainer pokedet otrainer opokedet dmg crit args} {
         append chanmsg "$opokemon(species) is already $stat!"
         append trainermsg "Foe $opokemon(species) is already $stat!"
         append otrainermsg "$opokemon(species) is already $stat!"
+      }
+    }
+    {^heal$} {
+      append chanmsg "$trainer's $pokemon(species) restored $dmg health!"
+      append trainermsg "Foe $pokemon(species) restored $dmg health!"
+      append otrainermsg "$pokemon(species) restored $dmg health!"
+    }
+    kamikaze {
+      append chanmsg "$trainer's $pokemon(species) fainted!"
+      append trainermsg "Foe $pokemon(species) fainted!"
+      append otrainermsg "$pokemon(species) fainted!"
+    }
+    {^timed} {
+      regexp {timed(.*)} $type - eff
+      append chanmsg "$otrainer's $opokemon(species) was hit by $move!"
+      append trainermsg "Foe $opokemon(species) was hit by $move!"
+      append otrainermsg "$opokemon(species) was hit by $move!"
+      switch $eff {
+        supereffective {
+          append chanmsg " It's super effective!"
+          append trainermsg " It's super effective!"
+          append otrainermsg " It's super effective!"
+        }
+        noteffective {
+          append chanmsg " It's not very effective!"
+          append trainermsg " It's super effective!"
+          append otrainermsg " It's super effective!"
+        }
+        fail {
+          append chanmsg " But it had no effect!"
+          append trainermsg " But it had no effect!"
+          append otrainermsg " But it had no effect!"
+        }
+      }
+      if {$dmg > 0} {
+        append chanmsg " $otrainer's $opokemon(species) suffered $dmg damage!"
+        append trainermsg " Foe $opokemon(species) suffered $dmg damage!"
+        append otrainermsg " $opokemon(species) suffered $dmg damage!"
       }
     }
     default {
@@ -1750,6 +1929,12 @@ proc poke:message {type move trainer pokedet otrainer opokedet dmg crit args} {
           append otrainermsg " $opokemon(species) was dragged out!"
         }
         default {
+          if {$move eq "Magnitude"} {
+            upvar 2 mg mg
+            append chanmsg " Magnitude $mg!"
+            append trainermsg " Magnitude $mg!"
+            append otrainermsg " Magnitude $mg!"
+          }
           switch $type {
             "super effective" {
               append chanmsg " It's super effective!"
@@ -1769,7 +1954,7 @@ proc poke:message {type move trainer pokedet otrainer opokedet dmg crit args} {
       }
     }
   }
-  if {[info exists opokemon(cHP)] && $dmg >= $opokemon(cHP)} {
+  if {[info exists opokemon(cHP)] && $dmg >= $opokemon(cHP) && $type ne "heal"} {
     append chanmsg " $otrainer's $opokemon(species) fainted!"
     append trainermsg " Foe $opokemon(species) fainted!"
     append otrainermsg " $opokemon(species) fainted!"
@@ -1778,7 +1963,8 @@ proc poke:message {type move trainer pokedet otrainer opokedet dmg crit args} {
   putquick "PRIVMSG $poke(chan) :$chanmsg"
   putquick "PRIVMSG $trainer :$trainermsg"
   putquick "PRIVMSG $otrainer :$otrainermsg"
-  
+  lappend poke(log) [list $poke(turn) $chanmsg]
+  puts "--POKELOG-- $poke(turn) | $chanmsg"
   return $faint
 }
 
@@ -1822,65 +2008,165 @@ proc poke:status {type trainer pokedet otrainer opokedet} {
       lappend poke(pending) [list -10 $pokemon(Spd) poke:status BPSN $trainer $pokedet $otrainer $opokedet]
       return [poke:message $msg - $otrainer $opokedet $trainer $pokedet $dmg 0]
     }
-    FRZ {}
-    PAR {}
-    SLP {}
+    FRZ {
+      poke:random
+      set test [rand 100]
+      if {$c < 20} {
+        poke:update_pokemon $otrainer $opokedet status "rem FRZ"
+        poke:message custom $otrainer $opokedet $trainer $pokedet - 0 "thawed out of the ice"
+      } else {
+        poke:message frzstun - $trainer $pokedet $otrainer $opokedet - 0
+        for {set level [info level]} {$level > 0} {incr level -1} {
+          if {[regexp {poke:move:} [info level $level]]} {break}
+        }
+        return -level [expr {[info level]-$level+1}] 0
+      }
+    }
+    PAR {
+      if {"PAR" in $pokemon(status)} {
+        poke:random
+        set test [rand 4]
+        if {$test < 1} {
+          poke:message parstun - $trainer $pokedet $otrainer $opokedet - 0
+          for {set level [info level]} {$level > 0} {incr level -1} {
+            if {[regexp {poke:move:} [info level $level]]} {break}
+          }
+          return -level [expr {[info level]-$level+1}] 0
+        }
+      }
+    }
+    SLP {
+      if {[set id [lsearch -glob $pokemon(status) "SLP*"]] > -1} {
+        regexp {SLP (\d).(\d)} [lindex $pokemon(status) $id] - t c
+        incr c -1
+        if {$c == 0} {
+          poke:update_pokemon $trainer $pokedet status "rem SLP"
+          poke:message customself - $trainer $pokedet $otrainer $opokedet - 0 "woke up"
+        } else {
+          set stat [lreplace $pokemon(status) $id $id "SLP $t.$c"]
+          poke:update_pokemon $trainer $pokedet status $stat
+          poke:message slpstun - $trainer $pokedet $otrainer $opokedet - 0
+          for {set level [info level]} {$level > 0} {incr level -1} {
+            if {[regexp {poke:move:} [info level $level]]} {break}
+          }
+          return -level [expr {[info level]-$level+1}] 0
+        }
+      }
+    }
+    disable {
+      
+    }
   }
 }
 
-proc poke:statustrigger {trainer pokedet otrainer opokedet immunetypes immuneabilities status chance target force} {
+proc poke:statustrigger {trainer pokedet otrainer opokedet status chance target force} {
   global poke
-  array set pokemon $pokedet
-  
   if {$target eq "self"} {
     set utrainer $otrainer
     set upokedet $opokedet
     set ttrainer $trainer
     set tpokedet $pokedet
   } else {
+    set tID [lsearch -index 0 $poke(team) $otrainer]
+    array set opokemon $opokedet
+    set opokedet [lsearch -regexp -inline [lindex $poke(team) $tID 1] "\\yspecies \\{?$opokemon(species)\\y\\}?"]
     set utrainer $trainer
     set upokedet $pokedet
     set ttrainer $otrainer
     set tpokedet $opokedet
+    array unset opokemon
   }
   
-  set immunity 0
-  foreach type $immunetypes {
-    if {[string match "*$type*" $pokemon(type)]} {
-      incr immunity
-      break
-    }
-  }
-  foreach ability $immuneabilities {
-    if {$ability eq $pokemon(ability)} {
-      incr immunity
-      break
-    }
-  }
-  if {$immunity} {return}
+  array set pokemon $upokedet
+  array set opokemon $tpokedet
+  if {$opokemon(cHP) == 0} {return}
   poke:random
   set test [rand 100]
-  if {$test > $chance} {return}
+  if {$test > $chance} {
+    if {$force} {poke:message multmiss - $utrainer $upokedet $ttrainer $tpokedet - 0}
+    return 0
+  }
   foreach stat $status {
-    lassign [poke:update_pokemon $ttrainer $tpokedet status "add $stat"] result
+    set types ""
+    set abilities ""
+    switch -regexp $stat {
+      {^BRN$} {
+        set types [list Fire]
+        set abilities [list "Water Veil" "Comatose"]
+      }
+      {^B?PSN$} {
+        set types [list Steel Poison]
+        set abilities [list "Immunity" "Comatose"]
+      }
+      {^PAR$} {
+        set types [list Electric]
+        set abilities [list "Limber" "Comatose"]
+      }
+      {^FRZ$} {
+        set types [list Ice]
+        set abilities [list "Magma Armor" "Comatose"]
+      }
+      {^SLP$} {
+        set abilities [list "Insomnia" "Vital Spirit" "Sweet Veil"]
+      }
+      {^Atk -} {
+        set abilities [list "Hyper Cutter" "White Smoke" "Clear Body"]
+      }
+      {^(?:Def|Sp[dAD]|Eva) -} {
+        set abilities [list "White Smoke" "Clear Body"]
+      }
+      {^Acc -} {
+        set abilities [list "Keen Eye" "White Smoke" "Clear Body"]
+      }
+    }
+    lassign [split $opokemon(type) "/"] type1 type2
+    if {$type1 in $types || $type2 in $types} {
+      if {$force} {poke:message "no effect" - $utrainer $upokedet $ttrainer $tpokedet - 0}
+      return 0
+    } elseif {$opokemon(ability) in $abilities} {
+      if {$force} {poke:message custom - $utrainer $upokedet $ttrainer $tpokedet - 0 "$opokemon(ability) protected it!"}
+      return 0
+    }
+    
+    lassign [poke:update_pokemon $ttrainer $tpokedet status "add $stat"] result cstat
     if {$result == 0} {
       if {$force} {
-        if {[string len $stat] == 3} {
-          poke:message statcap$stat $move $utrainer $upokedet $ttrainer $tpokedet - 0 $param
+        if {[string len $stat] <= 4} {
+          if {$cstat eq $stat} {
+            poke:message statcap$stat - $utrainer $upokedet $ttrainer $tpokedet - 0 $stat
+          } else {
+            poke:message statfail - $utrainer $upokedet $ttrainer $tpokedet - 0
+          }
         } else {
-          poke:message statcap$dir $move $utrainer $upokedet $ttrainer $tpokedet - 0 $param
+          regexp {^(\S+)\s+([-+]\d)} $stat - msg dir
+          poke:message statcap$dir - $utrainer $upokedet $ttrainer $tpokedet - 0 $msg
         }
       }
       continue
     }
     switch -regexp $stat {
-      {^(?:BRN|PSN)$} {
+      {^(?:BRN|B?PSN)$} {
         lappend poke(prio-9) [list $pokemon(Spd) poke:status $status $trainer $pokedet $otrainer $opokedet]
-        poke:message $stat - $otrainer $opokedet $trainer $pokedet - 0
+        poke:message $stat - $utrainer $upokedet $ttrainer $tpokedet - 0
       }
-      {^PAR$} {}
-      {^SLP$} {}
-      {^FRZ$} {}
+      {^PAR$} {
+        lappend poke(triggers) [list launch poke:status PAR $ttrainer $tpokedet $utrainer $upokedet]
+        poke:message $stat - $utrainer $upokedet $ttrainer $tpokedet - 0
+      }
+      {^SLP$} {
+        array set opokemon $cstat
+        set id [lsearch -glob $opokemon(status) "SLP*"]
+        poke:random
+        set turns [expr {[rand 2]+2}]
+        set finStat [lreplace $opokemon(status) $id $id "SLP $turns.$turns"]
+        poke:update_pokemon $otrainer $cstat status $finStat
+        lappend poke(triggers) [list launch poke:status SLP $ttrainer $tpokedet $utrainer $upokedet]
+        poke:message $stat - $utrainer $upokedet $ttrainer $tpokedet - 0
+      }
+      {^FRZ$} {
+        lappend poke(triggers) [list launch poke:status FRZ $ttrainer $tpokedet $utrainer $upokedet]
+        poke:message $stat - $utrainer $upokedet $ttrainer $tpokedet - 0
+      }
       default {
         #poke:trigger stat_change $otrainer $opokedet $trainer $pokedet $stat
         regexp {([a-zA-Z]{3}) ([-+]\d)} $stat - param dir
@@ -1888,6 +2174,7 @@ proc poke:statustrigger {trainer pokedet otrainer opokedet immunetypes immuneabi
       }
     }
   }
+  return 1
 }
 
 proc poke:flinch {trainer pokedet induce} {
@@ -1896,6 +2183,9 @@ proc poke:flinch {trainer pokedet induce} {
     # cause the trainer's pokemon flinch
   } else {
     # current trainer's pokemon is flinched
+    array set pokemon $pokedet
+    set idx [lsearch -regexp $poke(triggers) "poke:flinch $trainer $pokemon(species)"]
+    set poke(triggers) [lreplace $poke(triggers) $idx $idx]
   }
 }
 
