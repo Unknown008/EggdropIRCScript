@@ -2,8 +2,6 @@
 #	Auto-Identification of bot
 ##
 
-set botpass "numakuroo"
-
 bind notc - "*nickname is registered and protected*" do:ident
 bind pub "m|m" .admin.-ident do:deident
 bind pub "m|m" .admin.+ident do:ident
